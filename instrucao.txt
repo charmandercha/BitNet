@@ -1,0 +1,37 @@
+Instruções para Implementação do BitNet Distillation
+
+Esta implementação segue o paper "BitNet Distillation" para converter modelos full-precision em 1.58-bit BitNet usando três estágios.
+
+Pré-requisitos:
+- PyTorch 2.x com CUDA/ROCm
+- Transformers, Datasets, Accelerate
+- Modelo base (ex: Qwen3 ou HY-MT1.5-1.8B) baixado em /home/marcos/BitNet/
+
+Passos:
+
+1. Verificar ambiente:
+   python -m training.check_env
+
+2. Inicializar estudante (Stage-1):
+   python -m training.init_student
+   # Cria modelo com BitLinear e SubLN
+
+3. Continuar pré-treinamento (Stage-2):
+   python -m training.continue_pretrain
+   # Adapta pesos para representação ternária
+
+4. Destilação (Stage-3):
+   python -m training.distill
+   # Treina com destilação de logits e atenção
+
+5. Avaliação:
+   python -m training.eval_sanity
+   # Verifica similaridade com professor
+
+Para produção:
+- Use datasets maiores (WikiText full, FALCON 10B tokens)
+- Ajuste hiperparâmetros (λ, γ, temperatura)
+- Adicione métricas PPL/BLEU
+- Use DeepSpeed para treinamento distribuído
+
+Problemas conhecidos: Escala demo, generalize para outras arquiteturas.
