@@ -31,25 +31,13 @@ def load_student_model(checkpoint_path: str, device: str = "cuda") -> nn.Module:
     student.to(device)
     return student
 
-def compute_attention_distillation_loss(student_attentions, teacher_attentions, distill_layer: int = -1, split_heads: int = 1):
+def compute_attention_distillation_loss(student_attentions, teacher_attentions, distill_layer: int = -1):
     """
-    Compute multi-head attention distillation loss as per BitDistill Algorithm 1.
-    distills from the last layer by default.
+    Compute attention distillation using MSE on last layer to avoid OOM.
     """
-    # student_attentions: list of tensors [batch, num_heads, seq_len, seq_len]
-    # Assume distill_layer is the index, -1 for last
-    s_attn = student_attentions[distill_layer]  # [B, H, L, L]
-    t_attn = teacher_attentions[distill_layer]  # [B, H, L, L]
-
-    # Flatten heads if split_heads > 1, but for simplicity, assume split_heads=1
-    B, H, L, _ = s_attn.shape
-    s_attn_flat = s_attn.view(B * H, L, L)  # [B*H, L, L]
-    t_attn_flat = t_attn.view(B * H, L, L)
-
-    # Compute KL on each [L, L] matrix
-    s_log = torch.log(s_attn_flat + 1e-8)
-    t_prob = t_attn_flat + 1e-8
-    ad_loss = F.kl_div(s_log, t_prob, reduction="batchmean")
+    s_attn = student_attentions[distill_layer]
+    t_attn = teacher_attentions[distill_layer]
+    ad_loss = F.mse_loss(s_attn, t_attn)
     return ad_loss
 
 def distillation_loss(student_outputs, teacher_outputs, temperature: float = 2.0, lambda_ld: float = 1.0, gamma_ad: float = 0.001):
@@ -111,54 +99,44 @@ def main():
     # Optimizer and scheduler
     optimizer = AdamW(student.parameters(), lr=5e-5, weight_decay=0.01)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=1000, T_mult=1)
-    scaler = GradScaler('cuda')  # Updated for torch.amp
-    
+    scaler = GradScaler('cuda')
+
     num_epochs = 3
+    accumulation_steps = 8
     step = 0
-    
+
     for epoch in range(num_epochs):
-        for batch in train_dataloader:
-            batch = {k: v.to(device) for k, v in batch.items()}  # Ensure batch on device
-            
-            with autocast('cuda', dtype=torch.float16):  # Updated for torch.amp
-                # Forward teacher (no grad)
+        for batch_idx, batch in enumerate(train_dataloader):
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            with autocast('cuda', dtype=torch.float16):
                 with torch.no_grad():
                     teacher_outputs = teacher(**batch, output_attentions=True)
-                
-                # Forward student
+
                 student_outputs = student(**batch, output_attentions=True)
-                
-                # Compute CE loss
+
                 ce_loss = nn.functional.cross_entropy(
                     student_outputs.logits[..., :-1, :].contiguous().view(-1, student_outputs.logits.size(-1)),
                     batch["labels"][..., 1:].contiguous().view(-1),
                     ignore_index=-100
                 )
-                
-                # Compute distillation loss
+
                 distill_loss, ld_loss, ad_loss = distillation_loss(student_outputs, teacher_outputs)
-                
-                # Total loss
                 total_loss = ce_loss + distill_loss
-            
-            # Backward
+                total_loss = total_loss / accumulation_steps
+
             scaler.scale(total_loss).backward()
-            
-            # Gradient monitoring and clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm=1.0)
-            if grad_norm == 0:
-                print(f"Warning: Zero gradient norm at step {step}. Check STE in BitLinear.")
-            elif grad_norm > 10:
-                print(f"Warning: Exploding gradients (norm={grad_norm:.4f}) at step {step}.")
-            
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            optimizer.zero_grad()
-            
-            step += 1
-            if step % 10 == 0:
-                print(f"Step {step}: Total Loss={total_loss.item():.4f}, CE={ce_loss.item():.4f}, LD={ld_loss.item():.4f}, AD={ad_loss.item():.4f}, Grad Norm={grad_norm:.4f}")
+
+            if (batch_idx + 1) % accumulation_steps == 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
+
+                step += 1
+                if step % 10 == 0:
+                    print(f"Step {step}: Total Loss={total_loss.item() * accumulation_steps:.4f}, CE={ce_loss.item():.4f}, LD={ld_loss.item():.4f}, AD={ad_loss.item():.4f}, Grad Norm={grad_norm:.4f}")
     
     # Save student
     student.save_pretrained("/home/marcos/BitNet/student_final_checkpoints")

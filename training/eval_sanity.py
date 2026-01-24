@@ -9,15 +9,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from .init_student import init_bitnet_student
 
 def load_models(model_path: str, student_checkpoint: str, device: str = "cuda"):
-    """Load teacher (original) and student (1.58-bit) models."""
-    # Teacher: original HY-MT1.5-1.8B
+    """Load teacher and student models."""
     teacher = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16).to(device).eval()
     for param in teacher.parameters():
         param.requires_grad = False
-    
-    # Student: from final checkpoint (after all stages)
-    student = AutoModelForCausalLM.from_pretrained(student_checkpoint, torch_dtype=torch.float16).to(device).eval()
-    
+
+    student = init_bitnet_student(model_path, device)
+    student.load_state_dict(torch.load(f"{student_checkpoint}/pytorch_model.bin", map_location=device))
+    student.eval()
+
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -84,11 +84,9 @@ def main():
     teacher, student, tokenizer = load_models(model_path, student_checkpoint, device)
     
     sentences = [
-        "The technology is advancing fast.",
-        "I am learning to train models.",
-        "This is a test sentence for translation.",
-        "Machine learning is fascinating.",
-        "How does the weather look today?"
+        "Translate to Portuguese: The night was cold and the stars were bright.",
+        "Translate to Portuguese: Knowledge is the key to freedom.",
+        "Translate to Portuguese: She opened the book and began to read a story."
     ]
     
     avg_sim = translate_and_compare(teacher, student, tokenizer, sentences, device)

@@ -49,6 +49,25 @@ def check_accelerate():
     """Check accelerate library."""
     return check_library("accelerate")
 
+def check_triton():
+    """Check Triton compatibility."""
+    try:
+        import triton
+        print("✓ Triton is installed")
+        try:
+            # Check if compatible with GPU
+            import torch
+            if torch.cuda.is_available() or (hasattr(torch.version, 'hip') and torch.version.hip):
+                print("✓ Triton compatible with GPU")
+            else:
+                print("⚠ Triton installed but no GPU detected")
+        except Exception as e:
+            print(f"⚠ Triton check failed: {e}")
+        return True
+    except ImportError:
+        print("✗ Triton is not installed")
+        return False
+
 def main():
     print("=== BitDistill Environment Check ===\n")
     
@@ -61,6 +80,7 @@ def main():
     print("2. Checking key libraries:")
     all_good &= check_transformers()
     all_good &= check_accelerate()
+    all_good &= check_triton()
     print()
     
     if all_good:

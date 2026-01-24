@@ -10,31 +10,36 @@ from typing import Optional
 
 class BitLinear(nn.Module):
     """
-    BitLinear layer: Linear layer with 1.58-bit quantization (ternary weights {-1, 0, 1}).
-    Uses absmean quantization matching bitnet.cpp logic, with Straight-Through Estimator (STE) for training.
+    BitLinear layer: Linear layer with 1.58-bit quantization (ternary weights {-1, 0, 1} and 8-bit activations).
+    Uses absmean quantization for weights and absmax for activations, with Straight-Through Estimator (STE) for training.
     """
-    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+    def __init__(self, in_features: int, out_features: int, bias: bool = False):
         super(BitLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(torch.randn(out_features, in_features))
         self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
+        self.eps = 1e-5
 
-    def quantize_weights(self, w: torch.Tensor) -> torch.Tensor:
+    def quantize_weights(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Quantize weights to ternary {-1, 0, 1} using absmean scaling.
-        Matches the logic in bitnet.cpp/utils/convert.py.
+        Returns quantized weights and gamma scale.
         """
-        # Compute absmean scale Δ
-        abs_w = torch.abs(w)
-        delta = torch.mean(abs_w) + 1e-8  # Add small eps to avoid division by zero
-
-        # Quantize: Q_w(W) = Δ * RoundClip(W / Δ, -1, 1)
-        w_scaled = w / delta
+        gamma = torch.mean(torch.abs(w)) + self.eps
+        w_scaled = w / gamma
         w_quant = torch.clamp(torch.round(w_scaled), -1, 1)
+        return w_quant, gamma
 
-        # Rescale back
-        return w_quant * delta
+    def quantize_activations(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Quantize activations to 8-bits [-128, 127] using absmax scaling.
+        Returns quantized activations and scale.
+        """
+        scale = 127.0 / (torch.max(torch.abs(x), dim=-1, keepdim=True)[0] + self.eps)
+        x_quant = x * scale
+        x_quant = torch.clamp(torch.round(x_quant), -128, 127)
+        return x_quant, scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Ensure parameters are on the same device and dtype as input
@@ -43,17 +48,20 @@ class BitLinear(nn.Module):
         weight = self.weight.to(device).to(dtype)
         bias = self.bias.to(device).to(dtype) if self.bias is not None else None
 
-        # Quantize weights during forward (for inference compatibility)
-        w_quant = self.quantize_weights(weight)
+        # Quantize weights and activations
+        w_quant, gamma = self.quantize_weights(weight)
+        x_quant, scale = self.quantize_activations(x)
 
-        # Use quantized weights in linear operation
-        output = F.linear(x, w_quant, bias)
-
-        # STE: During backprop, gradients flow through original weights
+        # STE for training
         if self.training:
-            # Detach quantized weights and attach to original for gradient computation
-            w_quant = w_quant.detach() + weight - weight.detach()
+            w_final = w_quant * gamma + (weight - weight.detach())  # STE for weights
+            x_final = x_quant / scale + (x - x.detach())  # STE for activations
+        else:
+            w_final = w_quant * gamma
+            x_final = x_quant / scale
 
+        # Linear operation
+        output = F.linear(x_final, w_final, bias)
         return output
 
 
