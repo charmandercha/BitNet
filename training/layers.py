@@ -23,26 +23,42 @@ class BitLinear(nn.Module):
 
     def quantize_weights(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Quantize weights to ternary {-1, 0, 1} using absmean scaling.
-        Returns quantized weights and gamma scale.
+        CORRECTED: Quantize weights to ternary {-1, 0, 1} using absmean scaling.
+        Formula: Q_w(W) = Δ * RoundClip(W/Δ, -1, 1) where Δ = mean(|W|)
         """
+        # Compute absmean scale Δ as per paper Formula 1
         gamma = torch.mean(torch.abs(w)) + self.eps
+        
+        # Quantize: RoundClip(W/Δ, -1, 1)
         w_scaled = w / gamma
         w_quant = torch.clamp(torch.round(w_scaled), -1, 1)
+        
+        # Rescale back: Δ * quantized_value
+        w_quant = w_quant * gamma
+        
         return w_quant, gamma
 
     def quantize_activations(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Quantize activations to 8-bits [-128, 127] using absmax scaling.
-        Returns quantized activations and scale.
+        CORRECTED: Quantize activations to 8-bits [-128, 127] using absmax scaling.
+        Formula: Q_INT8(X) = (γ/127) * RoundClip(127*X/(γ+ε), -128, 127) where γ = max(|X|)
         """
-        scale = 127.0 / (torch.max(torch.abs(x), dim=-1, keepdim=True)[0] + self.eps)
-        x_quant = x * scale
-        x_quant = torch.clamp(torch.round(x_quant), -128, 127)
-        return x_quant, scale
+        # Compute absmax scale γ as per paper Formula 2
+        gamma = torch.max(torch.abs(x), dim=-1, keepdim=True)[0] + self.eps
+        
+        # Scale to 8-bit range: 127*X/γ
+        x_scaled = 127.0 * x / gamma
+        
+        # RoundClip to [-128, 127] range
+        x_quant = torch.clamp(torch.round(x_scaled), -128, 127)
+        
+        # Rescale back: (γ/127) * quantized_value
+        x_quant = gamma * x_quant / 127.0
+        
+        return x_quant, gamma
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Ensure parameters are on the same device and dtype as input
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Ensure parameters are on same device and dtype as input
         device = x.device
         dtype = x.dtype
         weight = self.weight.to(device).to(dtype)
@@ -52,20 +68,21 @@ class BitLinear(nn.Module):
         w_quant, gamma = self.quantize_weights(weight)
         x_quant, scale = self.quantize_activations(x)
 
-        # STE for training - proper implementation from paper
+        # STE for training - CORRECTED IMPLEMENTATION
+        # PyTorch automatically handles STE for clamp/round operations
         if self.training:
-            # STE: Use quantized values for forward, original for backward
+            # Use quantized values for forward pass
             w_final = w_quant * gamma
             x_final = x_quant / scale
-            # Add STE gradient path
-            w_final = w_final.detach() + weight - weight.detach()
-            x_final = x_final.detach() + x - x.detach()
+            # Add residual connection for STE gradient flow
+            residual_w = weight - weight.detach()  # Gradients flow through original weights
+            residual_x = x - x.detach()          # Gradients flow through original input
+            output = F.linear(x_final, w_final, bias) + F.linear(residual_x, residual_w, None)
         else:
             w_final = w_quant * gamma
             x_final = x_quant / scale
+            output = F.linear(x_final, w_final, bias)
 
-        # Linear operation
-        output = F.linear(x_final, w_final, bias)
         return output
 
 

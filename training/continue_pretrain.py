@@ -13,14 +13,42 @@ from datasets import load_dataset
 from .init_student import init_bitnet_student
 import math
 
-def prepare_corpus(tokenizer, max_length: int = 512, num_samples: int = 10000):
-    """Load and prepare a small pretraining corpus (subset of wikitext for demo, scale to FALCON in production)."""
-    # For demo, use wikitext-103 subset; in practice, use 10B tokens from FALCON as per paper
-    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train[:1%]")  # Small subset
+def prepare_corpus(tokenizer, max_length: int = 512, num_tokens_target: int = 10000000000):
+    """
+    CORRECTED: Load and prepare FALCON corpus as per BitDistill paper requirements.
+    Target: 10B tokens for proper Stage-2 continue pre-training.
+    """
+    try:
+        # PRIMARY: Use FALCON-refinedweb dataset as per paper
+        print("Loading FALCON-refinedweb dataset...")
+        dataset = load_dataset("tiiuae/falcon-refinedweb", split="train")
+        print(f"FALCON dataset loaded: {len(dataset)} examples")
+        
+        # Calculate samples needed for ~10B tokens (assuming avg 200 tokens per example)
+        target_samples = num_tokens_target // 200
+        if len(dataset) > target_samples:
+            dataset = dataset.select(range(target_samples))
+        
+    except Exception as e:
+        print(f"FALCON dataset not available: {e}")
+        print("Falling back to WikiText-103 (Note: Performance will be suboptimal)")
+        
+        # FALLBACK: Use larger WikiText subset for demo
+        dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train[:5%]")  # Larger fallback
+    
     def tokenize_function(examples):
-        return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=max_length)
-    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+        return tokenizer(
+            examples["text"], 
+            truncation=True, 
+            padding="max_length", 
+            max_length=max_length,
+            return_tensors="pt"
+        )
+    
+    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)  # Causal LM
+    
+    print(f"Tokenized dataset size: {len(tokenized_dataset)} examples")
     return tokenized_dataset, data_collator
 
 def continued_pretraining_loss(outputs, labels):
@@ -43,18 +71,22 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Dataset: small corpus as per Stage-2
+    # CORRECTED: Large corpus for Stage-2 as per paper
     train_dataset, data_collator = prepare_corpus(tokenizer)
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=4, collate_fn=data_collator, shuffle=True)
     
-    # Optimizer and scheduler (as per paper, standard settings)
+    # Optimizer and scheduler (paper's recommended settings)
     optimizer = AdamW(student.parameters(), lr=5e-5, weight_decay=0.01)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=1000, T_mult=1)
     
-    num_epochs = 1  # In practice, train until convergence or 10B tokens
+    # CORRECTED: Train until 10B tokens processed
+    target_tokens = 10000000000  # 10 billion tokens
+    tokens_processed = 0
     step = 0
     
-    for epoch in range(num_epochs):
+    print("Starting CORRECTED Stage-2: Continue Pre-training (target: 10B tokens)...")
+    
+    while tokens_processed < target_tokens:
         for batch in train_dataloader:
             batch = {k: v.to(device) for k, v in batch.items()}
             
@@ -67,17 +99,24 @@ def main():
             scheduler.step()
             optimizer.zero_grad()
             
+            # Track tokens processed
+            tokens_processed += batch["input_ids"].numel()  # Count all tokens in batch
+            
             step += 1
             if step % 100 == 0:
-                print(f"Step {step}: Loss={loss.item():.4f}, Grad Norm={grad_norm:.4f}")
+                tokens_b = tokens_processed / 1000000000  # Convert to billions
+                print(f"Step {step}: Loss={loss.item():.4f}, Grad Norm={grad_norm:.4f}, Tokens={tokens_b:.2f}B")
             
-            if step >= 1000:  # Early stop for demo
+            if tokens_processed >= target_tokens:
                 break
+        
+        if tokens_processed >= target_tokens:
+            break
     
     # Save checkpoint for Stage-3
     student.save_pretrained("/home/marcos/BitNet/student_stage2_checkpoints")
     tokenizer.save_pretrained("/home/marcos/BitNet/student_stage2_checkpoints")
-    print("Stage-2 Continued Pre-Training complete. Checkpoint saved.")
+    print(f"Stage-2 Complete: Processed {tokens_processed/1000000000:.2f}B tokens. Checkpoint saved.")
 
 if __name__ == "__main__":
     main()
