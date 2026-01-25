@@ -6,7 +6,7 @@ Loads a small HF model config, replaces Linear layers with BitLinear, and adds S
 import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM
-from .layers import BitLinear, SubLN, replace_linear_with_bitlinear
+from .layers import BitLinear, SubLN, replace_linear_with_bitlinear, BitNetAttentionWithSubLN, BitNetFFNWithSubLN
 from typing import Optional
 
 def calibrate_bitlinear_weights(student_layer: BitLinear, teacher_layer: nn.Linear) -> None:
@@ -41,30 +41,26 @@ def apply_bitnet_architecture(model: nn.Module, teacher_model: nn.Module) -> Non
 
 def apply_subLN_to_model(model: nn.Module) -> None:
     """
-    Apply SubLN modifications as per BitDistill paper.
-    Insert SubLN before MHSA and FFN output projections.
+    CORRECTED: Apply SubLN modifications as per BitDistill paper Equations 4-5.
+    Replace entire attention and FFN modules with custom implementations that integrate SubLN.
+    
+    Equation 4: Yl = Xl + SubLN(Concat(heads)) * Wout^MHSA
+    Equation 5: Xl+1 = Yl + SubLN(Yl * Wup) ⊙ σ(Yl * Wgate) * Wdown^FFN
     """
     def apply_recursive(module):
         for name, child in module.named_children():
-            # Check for MHSA output projection
-            if hasattr(child, 'self_attn') and hasattr(child.self_attn, 'o_proj'):
-                original_o_proj = child.self_attn.o_proj
-                subln = SubLN(original_o_proj.in_features)
-                child.self_attn.o_proj = nn.Sequential(subln, original_o_proj)
-            elif hasattr(child, 'attention') and hasattr(child.attention, 'wo'):
-                original_o_proj = child.attention.wo
-                subln = SubLN(original_o_proj.in_features)
-                child.attention.wo = nn.Sequential(subln, original_o_proj)
+            # Check for attention modules - replace entire attention with SubLN version
+            if hasattr(child, 'self_attn'):
+                # Replace entire attention module with SubLN-integrated version
+                child.self_attn = BitNetAttentionWithSubLN(child.self_attn)
+            elif hasattr(child, 'attention'):
+                child.attention = BitNetAttentionWithSubLN(child.attention)
             
-            # Check for FFN down projection
-            if hasattr(child, 'mlp') and hasattr(child.mlp, 'down_proj'):
-                original_down_proj = child.mlp.down_proj
-                subln = SubLN(original_down_proj.in_features)
-                child.mlp.down_proj = nn.Sequential(subln, original_down_proj)
-            elif hasattr(child, 'feed_forward') and hasattr(child.feed_forward, 'w2'):
-                original_down_proj = child.feed_forward.w2
-                subln = SubLN(original_down_proj.in_features)
-                child.feed_forward.w2 = nn.Sequential(subln, original_down_proj)
+            # Check for FFN modules - replace entire FFN with SubLN version
+            if hasattr(child, 'mlp'):
+                child.mlp = BitNetFFNWithSubLN(child.mlp)
+            elif hasattr(child, 'feed_forward'):
+                child.feed_forward = BitNetFFNWithSubLN(child.feed_forward)
             
             # Recursively apply to children
             apply_recursive(child)
