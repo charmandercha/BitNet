@@ -52,10 +52,14 @@ class BitLinear(nn.Module):
         w_quant, gamma = self.quantize_weights(weight)
         x_quant, scale = self.quantize_activations(x)
 
-        # STE for training
+        # STE for training - proper implementation from paper
         if self.training:
-            w_final = w_quant * gamma + (weight - weight.detach())  # STE for weights
-            x_final = x_quant / scale + (x - x.detach())  # STE for activations
+            # STE: Use quantized values for forward, original for backward
+            w_final = w_quant * gamma
+            x_final = x_quant / scale
+            # Add STE gradient path
+            w_final = w_final.detach() + weight - weight.detach()
+            x_final = x_final.detach() + x - x.detach()
         else:
             w_final = w_quant * gamma
             x_final = x_quant / scale

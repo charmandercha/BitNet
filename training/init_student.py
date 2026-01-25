@@ -25,43 +25,51 @@ def apply_bitnet_architecture(model: nn.Module, teacher_model: nn.Module) -> Non
     Replace Linear with BitLinear and calibrate weights.
     """
     teacher_modules = dict(teacher_model.named_modules())
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            if name in teacher_modules:
-                bit_layer = BitLinear(module.in_features, module.out_features, module.bias is not None)
-                calibrate_bitlinear_weights(bit_layer, teacher_modules[name])
-                parent_name = ".".join(name.split(".")[:-1])
-                layer_name = name.split(".")[-1]
-                if parent_name:
-                    setattr(dict(model.named_modules())[parent_name], layer_name, bit_layer)
-                else:
-                    setattr(model, layer_name, bit_layer)
+    
+    def replace_recursive(module, parent_name=""):
+        for name, child in module.named_children():
+            full_name = f"{parent_name}.{name}" if parent_name else name
+            if isinstance(child, nn.Linear):
+                if full_name in teacher_modules:
+                    bit_layer = BitLinear(child.in_features, child.out_features, child.bias is not None)
+                    calibrate_bitlinear_weights(bit_layer, teacher_modules[full_name])
+                    setattr(module, name, bit_layer)
+            else:
+                replace_recursive(child, full_name)
+    
+    replace_recursive(model)
 
 def apply_subLN_to_model(model: nn.Module) -> None:
     """
-    Apply SubLN modifications. Make robust by checking common names.
+    Apply SubLN modifications as per BitDistill paper.
+    Insert SubLN before MHSA and FFN output projections.
     """
-    for name, module in model.named_modules():
-        # Check for MHSA output projection
-        if hasattr(module, 'self_attn') and hasattr(module.self_attn, 'o_proj'):
-            original_o_proj = module.self_attn.o_proj
-            subln = SubLN(original_o_proj.in_features)
-            module.self_attn.o_proj = nn.Sequential(subln, original_o_proj)
-        elif hasattr(module, 'attention') and hasattr(module.attention, 'wo'):
-            # Alternative naming
-            original_o_proj = module.attention.wo
-            subln = SubLN(original_o_proj.in_features)
-            module.attention.wo = nn.Sequential(subln, original_o_proj)
-        # Check for FFN down projection
-        if hasattr(module, 'mlp') and hasattr(module.mlp, 'down_proj'):
-            original_down_proj = module.mlp.down_proj
-            subln = SubLN(original_down_proj.in_features)
-            module.mlp.down_proj = nn.Sequential(subln, original_down_proj)
-        elif hasattr(module, 'feed_forward') and hasattr(module.feed_forward, 'w2'):
-            # Alternative naming
-            original_down_proj = module.feed_forward.w2
-            subln = SubLN(original_down_proj.in_features)
-            module.feed_forward.w2 = nn.Sequential(subln, original_down_proj)
+    def apply_recursive(module):
+        for name, child in module.named_children():
+            # Check for MHSA output projection
+            if hasattr(child, 'self_attn') and hasattr(child.self_attn, 'o_proj'):
+                original_o_proj = child.self_attn.o_proj
+                subln = SubLN(original_o_proj.in_features)
+                child.self_attn.o_proj = nn.Sequential(subln, original_o_proj)
+            elif hasattr(child, 'attention') and hasattr(child.attention, 'wo'):
+                original_o_proj = child.attention.wo
+                subln = SubLN(original_o_proj.in_features)
+                child.attention.wo = nn.Sequential(subln, original_o_proj)
+            
+            # Check for FFN down projection
+            if hasattr(child, 'mlp') and hasattr(child.mlp, 'down_proj'):
+                original_down_proj = child.mlp.down_proj
+                subln = SubLN(original_down_proj.in_features)
+                child.mlp.down_proj = nn.Sequential(subln, original_down_proj)
+            elif hasattr(child, 'feed_forward') and hasattr(child.feed_forward, 'w2'):
+                original_down_proj = child.feed_forward.w2
+                subln = SubLN(original_down_proj.in_features)
+                child.feed_forward.w2 = nn.Sequential(subln, original_down_proj)
+            
+            # Recursively apply to children
+            apply_recursive(child)
+    
+    apply_recursive(model)
 
 def init_bitnet_student(model_path: str = "/home/marcos/BitNet/HY-MT1.5-1.8B", device: str = "cuda") -> nn.Module:
     """
