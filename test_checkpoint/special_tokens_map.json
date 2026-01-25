@@ -1,0 +1,23 @@
+{
+  "bos_token": {
+    "content": "<｜hy_begin▁of▁sentence｜>",
+    "lstrip": false,
+    "normalized": false,
+    "rstrip": false,
+    "single_word": false
+  },
+  "eos_token": {
+    "content": "<｜hy_place▁holder▁no▁2｜>",
+    "lstrip": false,
+    "normalized": false,
+    "rstrip": false,
+    "single_word": false
+  },
+  "pad_token": {
+    "content": "<｜hy_▁pad▁｜>",
+    "lstrip": false,
+    "normalized": false,
+    "rstrip": false,
+    "single_word": false
+  }
+}

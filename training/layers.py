@@ -57,7 +57,7 @@ class BitLinear(nn.Module):
         
         return x_quant, gamma
 
-def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Ensure parameters are on same device and dtype as input
         device = x.device
         dtype = x.dtype

@@ -97,5 +97,9 @@ def main():
     else:
         print("Sanity check failed: Further distillation needed.")
 
+def run_sanity_check():
+    """Main function for sanity check - callable from external scripts."""
+    main()
+
 if __name__ == "__main__":
     main()

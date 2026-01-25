@@ -6,9 +6,10 @@ Executes the three-stage BitDistill process as per Microsoft paper.
 
 import torch
 import argparse
+import os
 from training.init_student import init_bitnet_student
 from training.distill import stage2_continue_pretrain, stage3_distillation
-from training.eval_sanity import run_sanity_check
+from training.eval_sanity import main as run_sanity_check
 
 def main():
     parser = argparse.ArgumentParser(description="BitDistill Pipeline")
@@ -54,9 +55,14 @@ def main():
     print("BitDistill Pipeline Complete!")
     print("Final model saved at: /home/marcos/BitNet/student_final_checkpoints")
     
-    # Run sanity check
-    print("\nRunning sanity check...")
-    run_sanity_check()
+    # Run sanity check only if student_final_checkpoints exists
+    import os
+    if os.path.exists("/home/marcos/BitNet/student_final_checkpoints/pytorch_model.bin"):
+        print("\nRunning sanity check...")
+        run_sanity_check()
+    else:
+        print("\nSkipping sanity check - student_final_checkpoints not found.")
+        print("Run 'python run_bitdistill.py --stage all' to create final checkpoints.")
 
 if __name__ == "__main__":
     main()

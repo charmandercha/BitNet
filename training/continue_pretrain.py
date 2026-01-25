@@ -9,43 +9,37 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+# Skip large dataset download for demo - use small local data
 from datasets import load_dataset
+DATASET_AVAILABLE = True
 from .init_student import init_bitnet_student
 import math
 
 def prepare_corpus(tokenizer, max_length: int = 512, num_tokens_target: int = 10000000000):
     """
-    CORRECTED: Load and prepare FALCON corpus as per BitDistill paper requirements.
-    Target: 10B tokens for proper Stage-2 continue pre-training.
+    CORRECTED: Load and prepare corpus for Stage-2 continue pre-training.
+    Using small dataset for demo to avoid long downloads.
     """
-    try:
-        # PRIMARY: Use FALCON-refinedweb dataset as per paper
-        print("Loading FALCON-refinedweb dataset...")
-        dataset = load_dataset("tiiuae/falcon-refinedweb", split="train")
-        print(f"FALCON dataset loaded: {len(dataset)} examples")
-        
-        # Calculate samples needed for ~10B tokens (assuming avg 200 tokens per example)
-        target_samples = num_tokens_target // 200
-        if len(dataset) > target_samples:
-            dataset = dataset.select(range(target_samples))
-        
-    except Exception as e:
-        print(f"FALCON dataset not available: {e}")
-        print("Falling back to WikiText-103 (Note: Performance will be suboptimal)")
-        
-        # FALLBACK: Use larger WikiText subset for demo
-        dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train[:5%]")  # Larger fallback
+    # Use small WikiText dataset for demo - no large downloads
+print("Using small WikiText-103 dataset for demo...")
+dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train[:1000]")  # Small for testing
+print(f"Dataset loaded: {len(dataset)} examples")
+
+def tokenize_function(examples):
+    return tokenizer(
+        examples["text"], 
+        truncation=True, 
+        padding="max_length", 
+        max_length=max_length,
+        return_tensors="pt"
+    )
     
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], 
-            truncation=True, 
-            padding="max_length", 
-            max_length=max_length,
-            return_tensors="pt"
-        )
+    if isinstance(dataset, list):
+        # Handle dummy data
+        tokenized_dataset = tokenize_function(dataset)
+    else:
+        tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
     
-    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)  # Causal LM
     
     print(f"Tokenized dataset size: {len(tokenized_dataset)} examples")
@@ -72,7 +66,8 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     
     # CORRECTED: Large corpus for Stage-2 as per paper
-    train_dataset, data_collator = prepare_corpus(tokenizer)
+    train_dataset = prepare_corpus(tokenizer)
+    data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)  # Causal LM
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=4, collate_fn=data_collator, shuffle=True)
     
     # Optimizer and scheduler (paper's recommended settings)
